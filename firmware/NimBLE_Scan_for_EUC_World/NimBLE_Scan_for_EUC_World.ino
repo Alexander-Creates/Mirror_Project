@@ -208,7 +208,9 @@ void render() {
 
   // Warning: invert block when safety < 20%
   bool warn = euc.safety_valid && euc.safety < 20;
-  if (warn) {
+  bool warn2 = euc.safety_valid && euc.safety < 40;
+
+if (warn) {
     display.fillRect(70, 33, 58, 20, SSD1306_WHITE);
     display.setTextColor(SSD1306_BLACK);
     display.setTextSize(2);
@@ -217,15 +219,20 @@ void render() {
     display.setCursor(72, 37);
     display.print(w_buf);
     display.setTextColor(SSD1306_WHITE);
+    digitalWrite(redLed,    HIGH);
+    digitalWrite(yellowLed, LOW);
+    digitalWrite(greenLed,  LOW);
+  
+  } else if (warn2) {
     digitalWrite(redLed,    LOW);
     digitalWrite(yellowLed, HIGH);
-    digitalWrite(greenLed,  HIGH);
+    digitalWrite(greenLed,  LOW);  
 
   } else {
     digitalWrite(redLed,    LOW);
     digitalWrite(yellowLed, LOW);
     digitalWrite(greenLed,  HIGH);
-    
+
     // Numeric value large on the right
     display.setTextSize(2);
     char big_saf[5];
