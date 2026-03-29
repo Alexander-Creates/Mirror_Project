@@ -21,7 +21,7 @@ Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 // Pin3 = Yellow
 // Pin4 = Red
 
-int greenLed = 2;
+int greenLed = 2; //GPIO pins
 int yellowLed = 3;
 int redLed = 4;
 
