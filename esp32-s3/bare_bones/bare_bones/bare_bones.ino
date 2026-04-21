@@ -25,6 +25,38 @@ void setPWM(int val) {
   flow::setGlobalVariable(FLOW_GLOBAL_VARIABLE_PWM_VALUE, Value(val));
 }
 
+//color gradient interpolation
+lv_color_t arcColor(int val) {
+  uint8_t r, g;
+
+  if (val <= 50) {
+    // Green to Yellow (0 to 50): red increases 0 to 255, green stays 255
+    r = (uint8_t)(val * 255 / 50);
+    g = 255;
+  } else {
+    // Yellow to Red (50 to 80): green decreases 255 to 0, red stays 255
+    // Clamp anything above 80 to full red
+    int v = (val >= 80) ? 80 : val;
+    r = 255;
+    g = (uint8_t)((80 - v) * 255 / 30);
+  }
+
+  return lv_color_make(r, g, 0);
+}
+
+//function to set the actual color
+void setPWMArcColor(int val) {
+  lv_obj_set_style_arc_color(objects.pwm_arc, arcColor(val), LV_PART_INDICATOR | LV_STATE_DEFAULT);
+}
+
+
+void setSpeedArcColor(int val) {
+  lv_obj_set_style_arc_color(objects.speed_arc, arcColor(val), LV_PART_INDICATOR | LV_STATE_DEFAULT);
+}
+
+
+
+
 TFT_eSPI tft = TFT_eSPI();
 
 static lv_disp_draw_buf_t draw_buf;
@@ -58,23 +90,48 @@ void setup() {
   disp_drv.draw_buf = &draw_buf;
   lv_disp_drv_register(&disp_drv);
   ui_init();          // EEZ-generated — initializes all screens and widgets
+
+  // set static color for speed arc
+  lv_obj_set_style_arc_color(objects.speed_arc, lv_color_hex(0xFFFFFF), LV_PART_INDICATOR | LV_STATE_DEFAULT);
+
 }
 
 void loop() {
-  lv_led_set_color(objects.euc_connected_status, lv_color_hex(0xFF0000));
+  //lv_led_set_color(objects.euc_connected_status, lv_color_hex(0xFFFFFF));
   // Count up 0 to 50
-  for (int i = 0; i <= 50; i++) {
+  for (int i = 0; i <= 99; i++) {
     setPWM(i);          // All widgets bound to FLOW_GLOBAL_VARIABLE_SPEED_VALUE
                           // update automatically — arc, label, meter, etc.
+    setSpeed(i);
+    // if (i >= 50 && i <= 80) {
+    //   lv_obj_set_style_arc_color(objects.pwm_arc, lv_color_hex(0xFFFF00), LV_PART_INDICATOR | LV_STATE_DEFAULT);
+    // } else if (i > 80) {
+    //   lv_obj_set_style_arc_color(objects.pwm_arc, lv_color_hex(0xFF0000), LV_PART_INDICATOR | LV_STATE_DEFAULT);
+    // } else {
+    //   lv_obj_set_style_arc_color(objects.pwm_arc, lv_color_hex(0x00FF00), LV_PART_INDICATOR | LV_STATE_DEFAULT);
+    // }
+    setPWMArcColor(i);
+    setSpeedArcColor(i);
     lv_timer_handler();
     ui_tick();
     delay(5);
   }
 
+
   lv_led_set_color(objects.euc_connected_status, lv_color_hex(0x00FF00));
   // Count down 50 to 0
-  for (int i = 50; i >= 0; i--) {
+  for (int i = 99; i >= 0; i--) {
     setPWM(i);
+    setSpeed(i);
+    // if (i >= 50 && i <= 80) {
+    //   lv_obj_set_style_arc_color(objects.pwm_arc, lv_color_hex(0xFFFF00), LV_PART_INDICATOR | LV_STATE_DEFAULT);
+    // } else if (i > 80) {
+    //   lv_obj_set_style_arc_color(objects.pwm_arc, lv_color_hex(0xFF0000), LV_PART_INDICATOR | LV_STATE_DEFAULT);
+    // } else {
+    //   lv_obj_set_style_arc_color(objects.pwm_arc, lv_color_hex(0x00FF00), LV_PART_INDICATOR | LV_STATE_DEFAULT);
+    // }
+    setPWMArcColor(i);
+    setSpeedArcColor(i);
     lv_timer_handler();
     ui_tick();
     delay(5);
