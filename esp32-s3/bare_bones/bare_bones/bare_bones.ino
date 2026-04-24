@@ -1,12 +1,233 @@
-#define TFT_BL 40
 #include <TFT_eSPI.h>
 #include <lvgl.h>
 #include "ui.h"
 #include "vars.h"
 #include "structs.h"
 #include "screens.h"
+#include <Arduino.h>
+#include <NimBLEDevice.h>
+#define TFT_BL 40
 
-int speedVar = 0;
+#define NOTIFY_UUID "0000ffe1-0000-1000-8000-00805f9b34fb"
+
+// Setting the BLE configs
+static constexpr uint32_t scanTimeMs = 10 * 1000;
+NimBLEAddress foundAddress("", 0);
+bool deviceFound = false;
+
+//setting the telemetry structure
+struct {
+  float   speed      = 0;
+  uint8_t safety     = 0;
+  bool    speed_valid  = false;
+  bool    safety_valid = false;
+  bool    connected    = false;
+  bool    fresh        = false;
+} euc;
+
+
+// helper functions
+static inline uint16_t u16le(const uint8_t* d, int i) {
+  return (uint16_t)d[i] | ((uint16_t)d[i+1] << 8);
+}
+static inline int16_t i16le(const uint8_t* d, int i) {
+  return (int16_t)u16le(d, i);
+}
+static inline uint32_t u32le(const uint8_t* d, int i) {
+  return (uint32_t)d[i]            |
+         ((uint32_t)d[i+1] << 8)   |
+         ((uint32_t)d[i+2] << 16)  |
+         ((uint32_t)d[i+3] << 24);
+}
+
+void print_alarms(uint16_t flags) {
+  if (flags == 0) { Serial.print("  Alarms:    None\n"); return; }
+  const char* names[] = {
+    "1st speed", "2nd speed", "3rd speed",
+    "Current (peak)", "Current (sustained)", "Temperature",
+    "Overvoltage", "(reserved)", "Safety margin",
+    "Speed limit", "Undervoltage", "Tire pressure"
+  };
+  Serial.print("  Alarms:   ");
+  for (int i = 0; i < 12; i++) {
+    if (flags & (1 << i)) Serial.printf(" [%s]", names[i]);
+  }
+  Serial.println();
+}
+
+// Frame parsing
+void parse_frame_02(const uint8_t* d, uint8_t idx) {
+  uint16_t alarms  = u16le(d, 1);
+  uint16_t config  = u16le(d, 3);
+  uint8_t  vf      = d[5];
+  uint32_t dist    = u32le(d, 6);
+  float    speed   = u16le(d, 10) * 0.1f;
+  float    cellv   = u16le(d, 12) * 0.01f;
+  float    energy  = i16le(d, 14) * 0.1f;
+  uint8_t  safety  = d[16];
+  uint8_t  load    = d[17];
+  uint8_t  battery = d[18];
+  int      temp    = (int)d[19] - 40;
+
+  // Update display state
+  euc.speed        = speed;
+  euc.safety       = safety;
+  euc.speed_valid  = (vf >> 1) & 1;
+  euc.safety_valid = (vf >> 4) & 1;
+  euc.fresh        = true;
+
+  Serial.printf("\n=== Frame %d ===\n", idx);
+  print_alarms(alarms);
+  Serial.printf("  Config flags:   0x%04X\n",   config);
+  Serial.printf("  Distance:       %lu m         [valid=%d]\n", dist,    (vf>>0)&1);
+  Serial.printf("  Speed:          %.1f km/h     [valid=%d]\n", speed,   (vf>>1)&1);
+  Serial.printf("  Avg cell V:     %.2f V        [valid=%d]\n", cellv,   (vf>>2)&1);
+  Serial.printf("  Energy cons:    %.1f Wh/km    [valid=%d]\n", energy,  (vf>>3)&1);
+  Serial.printf("  Safety margin:  %d %%          [valid=%d]\n", safety, (vf>>4)&1);
+  Serial.printf("  Relative load:  %d %%          [valid=%d]\n", load,   (vf>>5)&1);
+  Serial.printf("  Battery:        %d %%          [valid=%d]\n", battery,(vf>>6)&1);
+  Serial.printf("  Temperature:    %d C          [valid=%d]\n",  temp,   (vf>>7)&1);
+
+  setSpeed(speed);
+
+}
+
+void parse_frame_1(const uint8_t* d) {
+  uint16_t alarms   = u16le(d, 1);
+  uint8_t  spd_rng  = d[3];
+  uint8_t  phone_bt = d[4];
+  uint16_t vf       = u16le(d, 5);
+  float    avg_spd  = u16le(d,  7) * 0.1f;
+  float    avg_ride = u16le(d,  9) * 0.1f;
+  float    max_spd  = u16le(d, 11) * 0.1f;
+  float    avg_eng  = i16le(d, 13) * 0.1f;
+  uint8_t  min_saf  = d[15];
+  uint8_t  min_load = d[16];
+  uint8_t  max_load = d[17];
+  uint8_t  min_bat  = d[18];
+  uint8_t  max_bat  = d[19];
+
+  Serial.println("\n=== Frame 1 ===");
+  print_alarms(alarms);
+  Serial.printf("  Speedo range:   %d km/h\n",    spd_rng);
+  Serial.printf("  Phone battery:  %d %%\n",       phone_bt);
+  Serial.printf("  Avg speed:      %.1f km/h     [valid=%d]\n", avg_spd,  (vf>>0)&1);
+  Serial.printf("  Avg ride speed: %.1f km/h     [valid=%d]\n", avg_ride, (vf>>1)&1);
+  Serial.printf("  Max speed:      %.1f km/h     [valid=%d]\n", max_spd,  (vf>>2)&1);
+  Serial.printf("  Avg energy:     %.1f Wh/km    [valid=%d]\n", avg_eng,  (vf>>3)&1);
+  Serial.printf("  Min safety:     %d %%          [valid=%d]\n", min_saf,  (vf>>4)&1);
+  Serial.printf("  Min rel load:   %d %%          [valid=%d]\n", min_load, (vf>>5)&1);
+  Serial.printf("  Max rel load:   %d %%          [valid=%d]\n", max_load, (vf>>6)&1);
+  Serial.printf("  Min battery:    %d %%          [valid=%d]\n", min_bat,  (vf>>7)&1);
+  Serial.printf("  Max battery:    %d %%          [valid=%d]\n", max_bat,  (vf>>8)&1);
+}
+
+void parse_frame_3(const uint8_t* d) {
+  uint16_t alarms   = u16le(d, 1);
+  uint16_t vf       = u16le(d, 3);
+  int      min_temp = (int)d[5] - 40;
+  int      max_temp = (int)d[6] - 40;
+
+  print_alarms(alarms);
+  Serial.printf("  Min temp:       %d C          [valid=%d]\n", min_temp, (vf>>0)&1);
+  Serial.printf("  Max temp:       %d C          [valid=%d]\n", max_temp, (vf>>1)&1);
+}
+
+// ── Notify handler ────────────────────────────────────────────────────────────
+static void notifyHandler(NimBLERemoteCharacteristic* pChar,
+                          uint8_t* data, size_t len, bool isNotify) {
+  char hex[len * 2 + 1];
+  for (size_t i = 0; i < len; i++) sprintf(&hex[i * 2], "%02x", data[i]);
+  hex[len * 2] = '\0';
+  Serial.printf("RAW: %s\n", hex);
+
+  if (len < 20) { Serial.println("  [short frame, skipping]"); return; }
+
+  switch (data[0]) {
+    case 0: case 2: parse_frame_02(data, data[0]); break;
+    case 1:         parse_frame_1(data);            break;
+    case 3:         parse_frame_3(data);            break;
+    default: Serial.printf("  [unknown frame index: %d]\n", data[0]); break;
+  }
+}
+
+// ── NimBLE client callbacks ───────────────────────────────────────────────────
+class ClientCallbacks : public NimBLEClientCallbacks {
+  void onDisconnect(NimBLEClient* client, int reason) override {
+    Serial.printf("Disconnected (reason=%d) - rescanning...\n", reason);
+    euc.connected = false;
+    euc.fresh     = false;
+    deviceFound   = false;
+  }
+};
+ClientCallbacks clientCB;
+
+void connectToEUC() {
+  Serial.println("Connecting...");
+  NimBLEClient* pClient = NimBLEDevice::createClient();
+  pClient->setClientCallbacks(&clientCB, false);
+
+  if (!pClient->connect(foundAddress)) {
+    Serial.println("Connection failed - rescanning...");
+    NimBLEDevice::deleteClient(pClient);
+    deviceFound = false;
+    return;
+  }
+
+  NimBLERemoteCharacteristic* pChar = nullptr;
+  const std::vector<NimBLERemoteService*> services = pClient->getServices(true);
+  for (NimBLERemoteService* svc : services) {
+    pChar = svc->getCharacteristic(NOTIFY_UUID);
+    if (pChar) break;
+  }
+
+  if (!pChar || !pChar->canNotify()) {
+    Serial.println("Notify characteristic not found - rescanning...");
+    pClient->disconnect();
+    NimBLEDevice::deleteClient(pClient);
+    deviceFound = false;
+    return;
+  }
+
+  pChar->subscribe(true, notifyHandler);
+  euc.connected = true;
+  Serial.println("Subscribed - receiving data:");
+}
+
+// ── NimBLE scan callbacks ─────────────────────────────────────────────────────
+class ScanCallbacks : public NimBLEScanCallbacks {
+  void onResult(const NimBLEAdvertisedDevice* dev) override {
+    String name = dev->getName().c_str();
+    name.trim();
+    bool matchName    = name.indexOf("EUC World 4FDE22") >= 0;
+    bool matchService = dev->isAdvertisingService(NimBLEUUID("ffe0"));
+
+    if (matchName || matchService) {
+      Serial.println("EUC World 4FDE22 FOUND");
+      foundAddress = dev->getAddress();
+      deviceFound  = true;
+      NimBLEDevice::getScan()->stop();
+    }
+  }
+
+  void onScanEnd(const NimBLEScanResults& results, int reason) override {
+    if (!deviceFound) {
+      Serial.println("EUC World 4FDE22 NOT found - restarting scan");
+      NimBLEDevice::getScan()->start(scanTimeMs, false, true);
+    }
+  }
+} scanCB;
+
+void startScan() {
+  deviceFound = false;
+  NimBLEScan* pScan = NimBLEDevice::getScan();
+  pScan->setScanCallbacks(&scanCB, false);
+  pScan->setActiveScan(true);
+  pScan->setMaxResults(0);
+  pScan->start(scanTimeMs, false, true);
+  Serial.println("Scanning...");
+}
+
 
 // Read
 // int getSpeed() {
@@ -49,16 +270,11 @@ void setPWMArcColor(int val) {
   lv_obj_set_style_arc_color(objects.pwm_arc, arcColor(val), LV_PART_INDICATOR | LV_STATE_DEFAULT);
 }
 
-
 void setSpeedArcColor(int val) {
   lv_obj_set_style_arc_color(objects.speed_arc, arcColor(val), LV_PART_INDICATOR | LV_STATE_DEFAULT);
 }
 
-
-
-
 TFT_eSPI tft = TFT_eSPI();
-
 static lv_disp_draw_buf_t draw_buf;
 static lv_color_t buf1[240 * 20];
 static lv_color_t buf2[240 * 20];
@@ -75,6 +291,11 @@ void disp_flush(lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t *color_p)
 }
 
 void setup() {
+  Serial.begin(115200);
+  NimBLEDevice::init("");
+  startScan();
+
+
   pinMode(TFT_BL, OUTPUT);
   digitalWrite(TFT_BL, HIGH); // Backlight on
   tft.init();
@@ -93,47 +314,67 @@ void setup() {
 
   // set static color for speed arc
   lv_obj_set_style_arc_color(objects.speed_arc, lv_color_hex(0xFFFFFF), LV_PART_INDICATOR | LV_STATE_DEFAULT);
-
+  
+  // set static color for LED widget
+  lv_led_set_color(objects.euc_connected_status, lv_color_hex(0xFFFFFF));  //set LED widget to green
 }
 
+// void loop() {
+//   if (deviceFound && !NimBLEDevice::getScan()->isScanning()) {
+//     connectToEUC();
+//     if (!deviceFound) {
+//       delay(2000);
+//       startScan();
+//     }
+//   }
+
+//   // Count up 0 to 50
+//   for (int i = 0; i <= 99; i++) {
+//     setPWM(i);          // All widgets bound to FLOW_GLOBAL_VARIABLE_SPEED_VALUE
+//                           // update automatically — arc, label, meter, etc.
+//     setSpeed(i);
+//     setPWMArcColor(i);
+//     setSpeedArcColor(i);
+//     lv_timer_handler();
+//     ui_tick();
+//     delay(5);
+//   }
+
+//   // Count down 50 to 0
+//   for (int i = 99; i >= 0; i--) {
+//     setPWM(i);
+//     setSpeed(i);
+//     setPWMArcColor(i);
+//     setSpeedArcColor(i);
+//     lv_timer_handler();
+//     ui_tick();
+//     delay(5);
+//   }
+
+// }
+
 void loop() {
-  //lv_led_set_color(objects.euc_connected_status, lv_color_hex(0xFFFFFF));
-  // Count up 0 to 50
-  for (int i = 0; i <= 99; i++) {
-    setPWM(i);          // All widgets bound to FLOW_GLOBAL_VARIABLE_SPEED_VALUE
-                          // update automatically — arc, label, meter, etc.
-    setSpeed(i);
-    // if (i >= 50 && i <= 80) {
-    //   lv_obj_set_style_arc_color(objects.pwm_arc, lv_color_hex(0xFFFF00), LV_PART_INDICATOR | LV_STATE_DEFAULT);
-    // } else if (i > 80) {
-    //   lv_obj_set_style_arc_color(objects.pwm_arc, lv_color_hex(0xFF0000), LV_PART_INDICATOR | LV_STATE_DEFAULT);
-    // } else {
-    //   lv_obj_set_style_arc_color(objects.pwm_arc, lv_color_hex(0x00FF00), LV_PART_INDICATOR | LV_STATE_DEFAULT);
-    // }
-    setPWMArcColor(i);
-    setSpeedArcColor(i);
-    lv_timer_handler();
-    ui_tick();
-    delay(5);
+  if (deviceFound && !NimBLEDevice::getScan()->isScanning()) {
+    connectToEUC();
+    if (!deviceFound) {
+      delay(2000);
+      startScan();
+    }
   }
 
+  if (euc.fresh) {
+    euc.fresh = false;  // consume the fresh flag
 
-  lv_led_set_color(objects.euc_connected_status, lv_color_hex(0x00FF00));
-  // Count down 50 to 0
-  for (int i = 99; i >= 0; i--) {
-    setPWM(i);
-    setSpeed(i);
-    // if (i >= 50 && i <= 80) {
-    //   lv_obj_set_style_arc_color(objects.pwm_arc, lv_color_hex(0xFFFF00), LV_PART_INDICATOR | LV_STATE_DEFAULT);
-    // } else if (i > 80) {
-    //   lv_obj_set_style_arc_color(objects.pwm_arc, lv_color_hex(0xFF0000), LV_PART_INDICATOR | LV_STATE_DEFAULT);
-    // } else {
-    //   lv_obj_set_style_arc_color(objects.pwm_arc, lv_color_hex(0x00FF00), LV_PART_INDICATOR | LV_STATE_DEFAULT);
-    // }
-    setPWMArcColor(i);
-    setSpeedArcColor(i);
-    lv_timer_handler();
-    ui_tick();
-    delay(5);
+    int speed  = euc.speed_valid  ? (int)euc.speed  : 0;
+    int safety = euc.safety_valid ? (int)euc.safety : 0;
+
+    setSpeed(speed);
+    setPWM(safety);
+    setSpeedArcColor(speed);
+    setPWMArcColor(safety);
   }
+
+  lv_timer_handler();
+  ui_tick();
+  delay(5);
 }
