@@ -19,11 +19,17 @@ bool deviceFound = false;
 struct {
   float   speed      = 0;
   uint8_t safety     = 0;
+  uint8_t euc_battery  = 0;
+  uint8_t dev_battery  = 0;
+  uint8_t esp_battery  = 0;
   bool    speed_valid  = false;
   bool    safety_valid = false;
+  bool    battery_valid = false;
+  bool    dev_bat_valid = false;
   bool    connected    = false;
   bool    fresh        = false;
 } euc;
+
 
 
 // helper functions
@@ -75,6 +81,9 @@ void parse_frame_02(const uint8_t* d, uint8_t idx) {
   euc.speed_valid  = (vf >> 1) & 1;
   euc.safety_valid = (vf >> 4) & 1;
   euc.fresh        = true;
+  euc.euc_battery   = battery;
+  euc.battery_valid = (vf >> 6) & 1;
+
 
   Serial.printf("\n=== Frame %d ===\n", idx);
   print_alarms(alarms);
@@ -87,9 +96,6 @@ void parse_frame_02(const uint8_t* d, uint8_t idx) {
   Serial.printf("  Relative load:  %d %%          [valid=%d]\n", load,   (vf>>5)&1);
   Serial.printf("  Battery:        %d %%          [valid=%d]\n", battery,(vf>>6)&1);
   Serial.printf("  Temperature:    %d C          [valid=%d]\n",  temp,   (vf>>7)&1);
-
-  setSpeed(speed);
-
 }
 
 void parse_frame_1(const uint8_t* d) {
@@ -120,6 +126,9 @@ void parse_frame_1(const uint8_t* d) {
   Serial.printf("  Max rel load:   %d %%          [valid=%d]\n", max_load, (vf>>6)&1);
   Serial.printf("  Min battery:    %d %%          [valid=%d]\n", min_bat,  (vf>>7)&1);
   Serial.printf("  Max battery:    %d %%          [valid=%d]\n", max_bat,  (vf>>8)&1);
+
+  euc.dev_battery  = phone_bt;
+  euc.dev_bat_valid = true;  // phone_bt has no validity flag in frame 1
 }
 
 void parse_frame_3(const uint8_t* d) {
@@ -249,7 +258,6 @@ void setPWM(int val) {
 //color gradient interpolation
 lv_color_t arcColor(int val) {
   uint8_t r, g;
-
   if (val <= 50) {
     // Green to Yellow (0 to 50): red increases 0 to 255, green stays 255
     r = (uint8_t)(val * 255 / 50);
@@ -261,13 +269,33 @@ lv_color_t arcColor(int val) {
     r = 255;
     g = (uint8_t)((80 - v) * 255 / 30);
   }
-
   return lv_color_make(r, g, 0);
 }
 
+
+lv_color_t arcColorPWM(int val) {
+  uint8_t r, g;
+  if (val <= 50) {
+    // Green to Yellow (0 to 50): red increases 0 to 255, green stays 255
+    r = (uint8_t)(val * 255 / 50);
+    g = 255;
+  } else {
+    // Yellow to Red (50 to 80): green decreases 255 to 0, red stays 255
+    // Clamp anything above 80 to full red
+    int v = (val >= 80) ? 80 : val;
+    r = 255;
+    g = (uint8_t)((80 - v) * 255 / 30);
+  }
+  return lv_color_make(g, r, 0);
+}
+
+
+
+
+
 //function to set the actual color
 void setPWMArcColor(int val) {
-  lv_obj_set_style_arc_color(objects.pwm_arc, arcColor(val), LV_PART_INDICATOR | LV_STATE_DEFAULT);
+  lv_obj_set_style_arc_color(objects.pwm_arc, arcColorPWM(val), LV_PART_INDICATOR | LV_STATE_DEFAULT);
 }
 
 void setSpeedArcColor(int val) {
@@ -289,6 +317,7 @@ void disp_flush(lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t *color_p)
   tft.endWrite();
   lv_disp_flush_ready(disp);
 }
+
 
 void setup() {
   Serial.begin(115200);
@@ -316,44 +345,49 @@ void setup() {
   lv_obj_set_style_arc_color(objects.speed_arc, lv_color_hex(0xFFFFFF), LV_PART_INDICATOR | LV_STATE_DEFAULT);
   
   // set static color for LED widget
-  lv_led_set_color(objects.euc_connected_status, lv_color_hex(0xFFFFFF));  //set LED widget to green
+  lv_led_set_color(objects.euc_connected_status, lv_color_hex(0xFFFFFF));  //set LED widget to white
+  analogReadResolution(12);
+  pinMode(1, INPUT);
 }
 
-// void loop() {
-//   if (deviceFound && !NimBLEDevice::getScan()->isScanning()) {
-//     connectToEUC();
-//     if (!deviceFound) {
-//       delay(2000);
-//       startScan();
-//     }
-//   }
+void setEUCBattery(int val) {
+  flow::setGlobalVariable(FLOW_GLOBAL_VARIABLE_EUC_BATTERY_VALUE, Value(val));
+}
 
-//   // Count up 0 to 50
-//   for (int i = 0; i <= 99; i++) {
-//     setPWM(i);          // All widgets bound to FLOW_GLOBAL_VARIABLE_SPEED_VALUE
-//                           // update automatically — arc, label, meter, etc.
-//     setSpeed(i);
-//     setPWMArcColor(i);
-//     setSpeedArcColor(i);
-//     lv_timer_handler();
-//     ui_tick();
-//     delay(5);
-//   }
+void setDEVBattery(int val) {
+  flow::setGlobalVariable(FLOW_GLOBAL_VARIABLE_DEVICE_BATTERY_VALUE, Value(val));
+}
 
-//   // Count down 50 to 0
-//   for (int i = 99; i >= 0; i--) {
-//     setPWM(i);
-//     setSpeed(i);
-//     setPWMArcColor(i);
-//     setSpeedArcColor(i);
-//     lv_timer_handler();
-//     ui_tick();
-//     delay(5);
-//   }
+// reading the battery of the euc display
+const float conversion_factor = 3.3f / (1 << 12) * 3;
+static constexpr float BAT_MAX_V = 3.3f;  // ADC reading at full charge (~4.2V actual)
+static constexpr float BAT_MIN_V = 2.5f;  // ADC reading at cutoff (~3.0V actual)
 
-// }
+
+int voltageToPercent(float v) {
+  if (v >= BAT_MAX_V) return 100;
+  if (v <= BAT_MIN_V) return 0;
+  return (int)((v - BAT_MIN_V) / (BAT_MAX_V - BAT_MIN_V) * 100.0f);
+}
+
+float mini_batt;
+float get_var_mini_batt() {
+    return mini_batt;
+}
+
+void set_var_mini_batt(float value) {
+    mini_batt = value;
+}
+
+
+
 
 void loop() {
+  float voltage = (analogReadMilliVolts(1) * conversion_factor );
+  set_var_mini_batt( voltageToPercent(voltage) );
+
+
+
   if (deviceFound && !NimBLEDevice::getScan()->isScanning()) {
     connectToEUC();
     if (!deviceFound) {
@@ -365,8 +399,15 @@ void loop() {
   if (euc.fresh) {
     euc.fresh = false;  // consume the fresh flag
 
-    int speed  = euc.speed_valid  ? (int)euc.speed  : 0;
+    int speed  = euc.speed_valid  ? (int)(euc.speed * 0.621371f)  : 0; //mph conversion
+    //int speed  = euc.speed_valid  ? (int)euc.speed : 0; //mph conversion
+    
     int safety = euc.safety_valid ? (int)euc.safety : 0;
+    int EUC_battery = euc.battery_valid ? (int)euc.euc_battery : 0;
+    int DEV_battery = euc.dev_bat_valid ? (int)euc.dev_battery : 0;
+    setEUCBattery(EUC_battery);
+    setDEVBattery(DEV_battery);
+    // add EUC_battery and DEV_battery 
 
     setSpeed(speed);
     setPWM(safety);
