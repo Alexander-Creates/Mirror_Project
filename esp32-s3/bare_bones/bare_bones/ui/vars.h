@@ -21,8 +21,8 @@ enum FlowGlobalVariables {
 
 // Native global variables
 
-extern float get_var_mini_batt();
-extern void set_var_mini_batt(float value);
+extern int32_t get_var_mini_batt();
+extern void set_var_mini_batt(int32_t value);
 
 #ifdef __cplusplus
 }

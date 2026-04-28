@@ -139,10 +139,6 @@ void create_screen_main() {
             lv_obj_set_style_bg_grad_color(obj, lv_color_hex(0xff0000), LV_PART_KNOB | LV_STATE_DEFAULT);
             lv_obj_set_style_bg_color(obj, lv_color_hex(0x2196f3), LV_PART_KNOB | LV_STATE_DEFAULT);
             lv_obj_set_style_arc_color(obj, lv_color_hex(0xff0000), LV_PART_INDICATOR | LV_STATE_DEFAULT);
-            lv_obj_set_style_arc_rounded(obj, false, LV_PART_INDICATOR | LV_STATE_DEFAULT);
-            lv_obj_set_style_radius(obj, 0, LV_PART_INDICATOR | LV_STATE_DEFAULT);
-            lv_obj_set_style_clip_corner(obj, true, LV_PART_INDICATOR | LV_STATE_DEFAULT);
-            lv_obj_set_style_arc_rounded(obj, false, LV_PART_MAIN | LV_STATE_DEFAULT);
         }
         {
             lv_obj_t *obj = lv_label_create(parent_obj);
@@ -221,9 +217,7 @@ void tick_screen_main() {
         const char *cur_val = lv_label_get_text(objects.device_battery_value);
         if (strcmp(new_val, cur_val) != 0) {
             tick_value_change_obj = objects.device_battery_value;
-            char formatted_text[32];
-            snprintf(formatted_text, sizeof(formatted_text), "%s %%", new_val);
-            lv_label_set_text(objects.device_battery_value, formatted_text);
+            lv_label_set_text(objects.device_battery_value, new_val);
             tick_value_change_obj = NULL;
         }
     }
@@ -232,9 +226,7 @@ void tick_screen_main() {
         const char *cur_val = lv_label_get_text(objects.euc_battery_value);
         if (strcmp(new_val, cur_val) != 0) {
             tick_value_change_obj = objects.euc_battery_value;
-            char formatted_text[32];
-            snprintf(formatted_text, sizeof(formatted_text), "%s %%", new_val);
-            lv_label_set_text(objects.euc_battery_value, formatted_text);
+            lv_label_set_text(objects.euc_battery_value, new_val);
             tick_value_change_obj = NULL;
         }
     }
@@ -288,9 +280,7 @@ void tick_screen_main() {
         const char *cur_val = lv_label_get_text(objects.obj1);
         if (strcmp(new_val, cur_val) != 0) {
             tick_value_change_obj = objects.obj1;
-            char formatted_text[32];
-            snprintf(formatted_text, sizeof(formatted_text), "%s %%", new_val);
-            lv_label_set_text(objects.obj1, formatted_text);
+            lv_label_set_text(objects.obj1, new_val);
             tick_value_change_obj = NULL;
         }
     }
@@ -389,7 +379,6 @@ void create_screens() {
 
 // Set default LVGL theme
     lv_disp_t *dispp = lv_disp_get_default();
-    //true if dark mode, false if not
     lv_theme_t *theme = lv_theme_default_init(dispp, lv_palette_main(LV_PALETTE_BLUE), lv_palette_main(LV_PALETTE_RED), true, LV_FONT_DEFAULT);
     lv_disp_set_theme(dispp, theme);
     

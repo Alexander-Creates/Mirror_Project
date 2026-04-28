@@ -164,6 +164,7 @@ static void notifyHandler(NimBLERemoteCharacteristic* pChar,
 class ClientCallbacks : public NimBLEClientCallbacks {
   void onDisconnect(NimBLEClient* client, int reason) override {
     Serial.printf("Disconnected (reason=%d) - rescanning...\n", reason);
+    lv_led_set_color(objects.euc_connected_status, lv_color_hex(0xFFFFFF));
     euc.connected = false;
     euc.fresh     = false;
     deviceFound   = false;
@@ -173,6 +174,7 @@ ClientCallbacks clientCB;
 
 void connectToEUC() {
   Serial.println("Connecting...");
+  
   NimBLEClient* pClient = NimBLEDevice::createClient();
   pClient->setClientCallbacks(&clientCB, false);
 
@@ -200,6 +202,7 @@ void connectToEUC() {
 
   pChar->subscribe(true, notifyHandler);
   euc.connected = true;
+  lv_led_set_color(objects.euc_connected_status, lv_color_hex(0x00FF00));  //set LED widget to green when connected to EUC
   Serial.println("Subscribed - receiving data:");
 }
 
@@ -213,6 +216,7 @@ class ScanCallbacks : public NimBLEScanCallbacks {
 
     if (matchName || matchService) {
       Serial.println("EUC World 4FDE22 FOUND");
+      lv_led_set_color(objects.euc_connected_status, lv_color_hex(0x0000FF));  //set LED widget to blue when BLE service found
       foundAddress = dev->getAddress();
       deviceFound  = true;
       NimBLEDevice::getScan()->stop();
@@ -222,6 +226,7 @@ class ScanCallbacks : public NimBLEScanCallbacks {
   void onScanEnd(const NimBLEScanResults& results, int reason) override {
     if (!deviceFound) {
       Serial.println("EUC World 4FDE22 NOT found - restarting scan");
+      lv_led_set_color(objects.euc_connected_status, lv_color_hex(0xFFFFFF));
       NimBLEDevice::getScan()->start(scanTimeMs, false, true);
     }
   }
@@ -310,7 +315,7 @@ static lv_color_t buf2[240 * 20];
 void disp_flush(lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t *color_p) {
   uint32_t w = area->x2 - area->x1 + 1;
   uint32_t h = area->y2 - area->y1 + 1;
-  tft.setRotation(135);
+  tft.setRotation(180);
   tft.startWrite();
   tft.setAddrWindow(area->x1, area->y1, w, h);
   tft.pushColors((uint16_t *)&color_p->full, w * h, true);
@@ -328,7 +333,7 @@ void setup() {
   pinMode(TFT_BL, OUTPUT);
   digitalWrite(TFT_BL, HIGH); // Backlight on
   tft.init();
-  tft.setRotation(0);
+  //tft.setRotation(0);
   lv_init();  
   lv_disp_draw_buf_init(&draw_buf, buf1, buf2, 240 * 20);
 
@@ -345,7 +350,7 @@ void setup() {
   lv_obj_set_style_arc_color(objects.speed_arc, lv_color_hex(0xFFFFFF), LV_PART_INDICATOR | LV_STATE_DEFAULT);
   
   // set static color for LED widget
-  lv_led_set_color(objects.euc_connected_status, lv_color_hex(0xFFFFFF));  //set LED widget to white
+  lv_led_set_color(objects.euc_connected_status, lv_color_hex(0xFFFFFF));  //set LED widget to white initially
   analogReadResolution(12);
   pinMode(1, INPUT);
 }
@@ -370,23 +375,46 @@ int voltageToPercent(float v) {
   return (int)((v - BAT_MIN_V) / (BAT_MAX_V - BAT_MIN_V) * 100.0f);
 }
 
-float mini_batt;
-float get_var_mini_batt() {
+//float mini_batt;
+int32_t mini_batt;
+// float get_var_mini_batt() {
+//     return mini_batt;
+// }
+
+
+// void set_var_mini_batt(float value) {
+//     mini_batt = value;
+// }
+
+extern "C" int32_t get_var_mini_batt() {
     return mini_batt;
 }
 
-void set_var_mini_batt(float value) {
+extern "C" void set_var_mini_batt(int32_t value) {
     mini_batt = value;
 }
 
 
 
-
 void loop() {
-  float voltage = (analogReadMilliVolts(1) * conversion_factor );
-  set_var_mini_batt( voltageToPercent(voltage) );
+  // float voltage = (analogReadMilliVolts(1) * conversion_factor );
+  // int batt_result = voltageToPercent(voltage);
+  // set_var_mini_batt( batt_result );
 
-
+  // Throttle battery reading to every 500ms (adjust as needed)
+  static unsigned long last_battery_read = 0;
+  unsigned long now = ::millis();
+  
+  if (now - last_battery_read >= 500) {  // Read every 500ms
+    last_battery_read = now;
+    
+    float voltage = (analogReadMilliVolts(1) * conversion_factor);
+    int batt_result = voltageToPercent(voltage);
+    set_var_mini_batt(batt_result);
+    
+    String batt_result_string = String(batt_result) + " %";
+    Serial.println(batt_result_string);
+  }
 
   if (deviceFound && !NimBLEDevice::getScan()->isScanning()) {
     connectToEUC();
