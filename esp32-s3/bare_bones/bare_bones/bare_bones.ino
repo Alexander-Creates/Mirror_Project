@@ -397,15 +397,11 @@ extern "C" void set_var_mini_batt(int32_t value) {
 
 
 void loop() {
-  // float voltage = (analogReadMilliVolts(1) * conversion_factor );
-  // int batt_result = voltageToPercent(voltage);
-  // set_var_mini_batt( batt_result );
-
   // Throttle battery reading to every 500ms (adjust as needed)
   static unsigned long last_battery_read = 0;
   unsigned long now = ::millis();
   
-  if (now - last_battery_read >= 500) {  // Read every 500ms
+  if (now - last_battery_read >= 1000) {  // Read every 500ms
     last_battery_read = now;
     
     float voltage = (analogReadMilliVolts(1) * conversion_factor);
