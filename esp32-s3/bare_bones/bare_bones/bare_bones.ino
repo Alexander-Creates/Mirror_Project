@@ -15,6 +15,16 @@ static constexpr uint32_t scanTimeMs = 10 * 1000;
 NimBLEAddress foundAddress("", 0);
 bool deviceFound = false;
 
+
+
+//battery configuration variables
+int32_t mini_batt;
+
+
+
+//                                                                            //
+// -------------------- EUC data retrival  ---------------------------------- //
+//                                                                            //
 //setting the telemetry structure
 struct {
   float   speed      = 0;
@@ -29,8 +39,6 @@ struct {
   bool    connected    = false;
   bool    fresh        = false;
 } euc;
-
-
 
 // helper functions
 static inline uint16_t u16le(const uint8_t* d, int i) {
@@ -142,7 +150,10 @@ void parse_frame_3(const uint8_t* d) {
   Serial.printf("  Max temp:       %d C          [valid=%d]\n", max_temp, (vf>>1)&1);
 }
 
-// ── Notify handler ────────────────────────────────────────────────────────────
+//                                                                            //
+// -------------------- BLE Connection     ---------------------------------- //
+//                                                                            //
+// Notify handler 
 static void notifyHandler(NimBLERemoteCharacteristic* pChar,
                           uint8_t* data, size_t len, bool isNotify) {
   char hex[len * 2 + 1];
@@ -160,7 +171,7 @@ static void notifyHandler(NimBLERemoteCharacteristic* pChar,
   }
 }
 
-// ── NimBLE client callbacks ───────────────────────────────────────────────────
+// NimBLE client callbacks
 class ClientCallbacks : public NimBLEClientCallbacks {
   void onDisconnect(NimBLEClient* client, int reason) override {
     Serial.printf("Disconnected (reason=%d) - rescanning...\n", reason);
@@ -206,7 +217,7 @@ void connectToEUC() {
   Serial.println("Subscribed - receiving data:");
 }
 
-// ── NimBLE scan callbacks ─────────────────────────────────────────────────────
+// NimBLE scan callbacks 
 class ScanCallbacks : public NimBLEScanCallbacks {
   void onResult(const NimBLEAdvertisedDevice* dev) override {
     String name = dev->getName().c_str();
@@ -232,6 +243,8 @@ class ScanCallbacks : public NimBLEScanCallbacks {
   }
 } scanCB;
 
+
+
 void startScan() {
   deviceFound = false;
   NimBLEScan* pScan = NimBLEDevice::getScan();
@@ -243,19 +256,15 @@ void startScan() {
 }
 
 
-// Read
-// int getSpeed() {
-//   return flow::getGlobalVariable(FLOW_GLOBAL_VARIABLE_SPEED_VALUE).getInt();
-// }
-// Write LVGL labels bound to these variables auto-update
+//                                                                            //
+// -------------------- LVGL Functionality ---------------------------------- //
+//                                                                            //
+// setting the speed value from the EUC telemetry to the label widget in LVGL
 void setSpeed(int val) {
   flow::setGlobalVariable(FLOW_GLOBAL_VARIABLE_SPEED_VALUE, Value(val));
 }
 
-// Read
-// int getPWM() {
-//   return flow::getGlobalVariable(FLOW_GLOBAL_VARIABLE_PWM_VALUE).getInt();
-// }
+// setting the PWM value from the EUC telemetry to the label widget in LVGL
 void setPWM(int val) {
   flow::setGlobalVariable(FLOW_GLOBAL_VARIABLE_PWM_VALUE, Value(val));
 }
@@ -294,10 +303,6 @@ lv_color_t arcColorPWM(int val) {
   return lv_color_make(g, r, 0);
 }
 
-
-
-
-
 //function to set the actual color
 void setPWMArcColor(int val) {
   lv_obj_set_style_arc_color(objects.pwm_arc, arcColorPWM(val), LV_PART_INDICATOR | LV_STATE_DEFAULT);
@@ -324,19 +329,52 @@ void disp_flush(lv_disp_drv_t *disp, const lv_area_t *area, lv_color_t *color_p)
 }
 
 
+// EUC battery readings
+void setEUCBattery(int val) {
+  flow::setGlobalVariable(FLOW_GLOBAL_VARIABLE_EUC_BATTERY_VALUE, Value(val));
+}
+
+// Phone battery reading
+void setDEVBattery(int val) {
+  flow::setGlobalVariable(FLOW_GLOBAL_VARIABLE_DEVICE_BATTERY_VALUE, Value(val));
+}
+
+
+extern "C" int32_t get_var_mini_batt() {
+    return mini_batt;
+}
+extern "C" void set_var_mini_batt(int32_t value) {
+    mini_batt = value;
+}
+
+
+//                                                                            //
+// -------------------- Device Battery Monitoring Functionality ------------- //
+//                                                                            //
+const float conversion_factor = 3.3f / (1 << 12) * 3;
+static constexpr float BAT_MAX_V = 3.3f;  // ADC reading at full charge (~4.2V actual)
+static constexpr float BAT_MIN_V = 2.5f;  // ADC reading at cutoff (~3.0V actual)
+
+int voltageToPercent(float v) {
+  if (v >= BAT_MAX_V) return 100;
+  if (v <= BAT_MIN_V) return 0;
+  return (int)((v - BAT_MIN_V) / (BAT_MAX_V - BAT_MIN_V) * 100.0f);
+}
+
+
+
+
+
 void setup() {
   Serial.begin(115200);
   NimBLEDevice::init("");
   startScan();
-
-
   pinMode(TFT_BL, OUTPUT);
   digitalWrite(TFT_BL, HIGH); // Backlight on
   tft.init();
   //tft.setRotation(0);
   lv_init();  
   lv_disp_draw_buf_init(&draw_buf, buf1, buf2, 240 * 20);
-
   static lv_disp_drv_t disp_drv;
   lv_disp_drv_init(&disp_drv);
   disp_drv.hor_res  = 240;
@@ -345,63 +383,23 @@ void setup() {
   disp_drv.draw_buf = &draw_buf;
   lv_disp_drv_register(&disp_drv);
   ui_init();          // EEZ-generated — initializes all screens and widgets
-
   // set static color for speed arc
   lv_obj_set_style_arc_color(objects.speed_arc, lv_color_hex(0xFFFFFF), LV_PART_INDICATOR | LV_STATE_DEFAULT);
-  
   // set static color for LED widget
   lv_led_set_color(objects.euc_connected_status, lv_color_hex(0xFFFFFF));  //set LED widget to white initially
   analogReadResolution(12);
   pinMode(1, INPUT);
 }
 
-void setEUCBattery(int val) {
-  flow::setGlobalVariable(FLOW_GLOBAL_VARIABLE_EUC_BATTERY_VALUE, Value(val));
-}
-
-void setDEVBattery(int val) {
-  flow::setGlobalVariable(FLOW_GLOBAL_VARIABLE_DEVICE_BATTERY_VALUE, Value(val));
-}
-
-// reading the battery of the euc display
-const float conversion_factor = 3.3f / (1 << 12) * 3;
-static constexpr float BAT_MAX_V = 3.3f;  // ADC reading at full charge (~4.2V actual)
-static constexpr float BAT_MIN_V = 2.5f;  // ADC reading at cutoff (~3.0V actual)
-
-
-int voltageToPercent(float v) {
-  if (v >= BAT_MAX_V) return 100;
-  if (v <= BAT_MIN_V) return 0;
-  return (int)((v - BAT_MIN_V) / (BAT_MAX_V - BAT_MIN_V) * 100.0f);
-}
-
-//float mini_batt;
-int32_t mini_batt;
-// float get_var_mini_batt() {
-//     return mini_batt;
-// }
-
-
-// void set_var_mini_batt(float value) {
-//     mini_batt = value;
-// }
-
-extern "C" int32_t get_var_mini_batt() {
-    return mini_batt;
-}
-
-extern "C" void set_var_mini_batt(int32_t value) {
-    mini_batt = value;
-}
 
 
 
 void loop() {
-  // Throttle battery reading to every 500ms (adjust as needed)
+  // Throttle battery reading to every n milliseconds
   static unsigned long last_battery_read = 0;
   unsigned long now = ::millis();
   
-  if (now - last_battery_read >= 1000) {  // Read every 500ms
+  if (now - last_battery_read >= 1000) { 
     last_battery_read = now;
     
     float voltage = (analogReadMilliVolts(1) * conversion_factor);
